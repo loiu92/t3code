@@ -720,7 +720,10 @@ const buildAppUnderTest = (options?: {
       ),
       NativeAppIconResolver.layer,
       Layer.succeed(GitHubAttachmentResolver.GitHubAttachmentResolver, {
-        resolve: () => Effect.succeed(null),
+        resolve: (url) =>
+          Effect.map(Clock.currentTimeMillis, (now) =>
+            url.endsWith("-missing") ? null : fakeSignedAttachmentDownload(url, now),
+          ),
       }),
     );
     const gitWorkflowLayer = GitWorkflowService.layer.pipe(
@@ -1531,6 +1534,15 @@ const testRequestUrl = (input: Parameters<typeof fetch>[0]): string => {
   const url = new URL(value);
   return `${url.pathname}${url.search}`;
 };
+
+/** What GitHub answers for an upload: a SigV4 query-signed URL, dated now, good for five minutes. */
+function fakeSignedAttachmentDownload(url: string, now: number): string {
+  const date = DateTime.formatIso(DateTime.makeUnsafe(Math.floor(now / 1000) * 1000)).replace(
+    /[-:]|\.\d{3}/g,
+    "",
+  );
+  return `https://signed.example/download?X-Amz-Date=${date}&X-Amz-Expires=300&for=${encodeURIComponent(url)}`;
+}
 
 const fetchEffect = (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
   const request = HttpClientRequest.make((init?.method ?? "GET") as "GET" | "POST")(
@@ -5689,6 +5701,36 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             assert.equal(response.status, 200);
             assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
             assert.equal(yield* response.text, "<p>draft</p>");
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("redirects a GitHub attachment to the signed download and never relays it", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const url = "https://github.com/user-attachments/assets/0b1f6f2e-3c4d-4e5f-8a9b-0c1d2e3f4a5b";
+
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const issued = yield* client[WS_METHODS.assetsCreateUrl]({
+              resource: { _tag: "github-attachment", url },
+            });
+            const response = yield* fetchEffect(issued.relativeUrl, { redirect: "manual" });
+            assert.equal(response.status, 302);
+            assert.equal(
+              response.headers.location,
+              fakeSignedAttachmentDownload(url, yield* Clock.currentTimeMillis),
+            );
+            assert.match(response.headers["cache-control"] ?? "", /^private, max-age=2[0-9]{2}$/);
+
+            const missing = yield* client[WS_METHODS.assetsCreateUrl]({
+              resource: { _tag: "github-attachment", url: `${url}-missing` },
+            });
+            assert.equal((yield* fetchEffect(missing.relativeUrl)).status, 404);
           }),
         ),
       );

@@ -1608,19 +1608,24 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
       : resource._tag === "workspace-file" && props.workspaceRoot
         ? `${props.workspaceRoot.replace(/[\\/]+$/, "")}/${resource.path}`
         : undefined;
-  const reference = path ? mediaFileReference(path, props.workspaceRoot) : undefined;
-  const relativePath = reference?.relativePath;
   // An environment from before the `github-attachment` resource cannot mint a URL for it.
   // Loading the authored link then is exactly what the client did before: a public
   // repository still renders and a private one fails the way it always has.
   const authoredUrl = resource._tag === "github-attachment" ? resource.url : null;
+  const showsAuthoredUrl = assetUrl._tag === "Failure" && authoredUrl !== null;
   const src =
     assetUrl._tag === "Success"
       ? assetUrl.url + (props.srcFragment ?? "")
-      : assetUrl._tag === "Failure"
+      : showsAuthoredUrl
         ? authoredUrl
         : null;
   const sourceFailed = assetUrl._tag === "Failure" && authoredUrl === null;
+  const reference = path
+    ? mediaFileReference(path, props.workspaceRoot)
+    : authoredUrl !== null
+      ? mediaUrlReference(authoredUrl)
+      : undefined;
+  const relativePath = reference?.kind === "file" ? reference.relativePath : undefined;
   // The server reads the pixel size from the file header, so the slot can be
   // the image's final box instead of a 16:9 guess. An authored size wins; a
   // caller's height cap shrinks the box while keeping the ratio.
@@ -1637,7 +1642,8 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     kind: props.kind ?? "image",
     name: props.alt || (props.kind ?? "image"),
     src,
-    asset: { environmentId: props.environmentId, resource },
+    // Save and copy re-mint the URL; when the authored link is what is showing, they read that.
+    ...(showsAuthoredUrl ? {} : { asset: { environmentId: props.environmentId, resource } }),
     ...(reference ? { reference } : {}),
     ...(relativePath && (resource._tag === "media-file" || resource._tag === "workspace-file")
       ? {

@@ -1,15 +1,19 @@
+import { isGitHubAttachmentUrl } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
 import * as ServerConfig from "../config.ts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 
 const GITHUB_HOST = "github.com";
-const TOKEN_CACHE_TTL = Duration.minutes(5);
+const TOKEN_CACHE_TTL_MS = Duration.toMillis(Duration.minutes(5));
 const RESOLVE_TIMEOUT = Duration.seconds(15);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -41,19 +45,38 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
 
   // `gh` owns the credential, so login state and GH_TOKEN keep working as they do for
-  // every other GitHub call. Cached so a body full of screenshots does not spawn one
-  // process per image. Without a token the request goes out anonymously, which is
-  // what a public repository needs and what a private one already failed with.
-  const token = yield* github
-    .execute({ cwd: config.stateDir, args: ["auth", "token", "--hostname", GITHUB_HOST] })
-    .pipe(
-      Effect.map((output) => output.stdout.trim() || null),
-      Effect.orElseSucceed(() => null),
-      Effect.cachedWithTTL(TOKEN_CACHE_TTL),
-    );
+  // every other GitHub call. A found token is cached so a body full of screenshots
+  // does not spawn one process per image; a missing one is not, so `gh auth login`
+  // takes effect on the next image. Without a token the request goes out
+  // anonymously, which is what a public repository needs and what a private one
+  // already failed with.
+  const tokenCache = yield* Ref.make<{ token: string; expiresAt: number } | null>(null);
+  const tokenLookup = yield* Semaphore.make(1);
+  const token = tokenLookup.withPermits(1)(
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const cached = yield* Ref.get(tokenCache);
+      if (cached !== null && cached.expiresAt > now) return cached.token;
+      const found = yield* github
+        .execute({ cwd: config.stateDir, args: ["auth", "token", "--hostname", GITHUB_HOST] })
+        .pipe(
+          Effect.map((output) => output.stdout.trim() || null),
+          Effect.orElseSucceed(() => null),
+        );
+      if (found !== null) {
+        yield* Ref.set(tokenCache, { token: found, expiresAt: now + TOKEN_CACHE_TTL_MS });
+      }
+      return found;
+    }),
+  );
 
   const resolve = Effect.fn("GitHubAttachmentResolver.resolve")(function* (url: string) {
+    // The claims were signed from a checked resource, but the credential goes on the
+    // wire here, so this is where the allowlist is enforced.
+    if (!isGitHubAttachmentUrl(url)) return null;
     const authorization = yield* token;
+    // Read outward from `get`: the request runs with `redirect: "manual"`, so the
+    // signed target on another host is reported, not followed, and never downloaded.
     return yield* httpClient
       .get(url, {
         headers: authorization === null ? {} : { authorization: `token ${authorization}` },
@@ -74,7 +97,6 @@ export const make = Effect.gen(function* () {
           Effect.logWarning("Failed to resolve a GitHub attachment.", { url, cause }),
         ),
         Effect.orElseSucceed(() => null),
-        // The signed target is on another host and following it would download the file.
         Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
       );
   });

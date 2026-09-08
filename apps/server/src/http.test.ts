@@ -345,22 +345,34 @@ describe("http dev routing", () => {
 });
 
 describe("assetRedirectHeaders", () => {
+  const signedAt = Date.UTC(2026, 8, 8, 13, 0, 33);
+  const signed = (query: string) =>
+    `https://bucket.s3.amazonaws.com/a.png?X-Amz-Date=20260908T130033Z&${query}&X-Amz-Signature=s`;
+
   it("lets the browser reuse a signed redirect until shortly before it expires", () => {
-    expect(
-      assetRedirectHeaders(
-        "https://bucket.s3.amazonaws.com/a.png?X-Amz-Expires=300&X-Amz-Signature=s",
-      ),
-    ).toEqual({ "Cache-Control": "private, max-age=240" });
+    expect(assetRedirectHeaders(signed("X-Amz-Expires=300"), signedAt)).toEqual({
+      "Cache-Control": "private, max-age=240",
+    });
+    // The lifetime counts from the signing date, so a reused signature yields less.
+    expect(assetRedirectHeaders(signed("X-Amz-Expires=300"), signedAt + 100_000)).toEqual({
+      "Cache-Control": "private, max-age=140",
+    });
   });
 
-  it("never caches a redirect whose lifetime is unknown or too short", () => {
-    expect(assetRedirectHeaders("https://example.com/a.png")).toEqual({
+  it("never caches a redirect whose lifetime is unknown, spent, or too short", () => {
+    expect(assetRedirectHeaders("https://example.com/a.png", signedAt)).toEqual({
       "Cache-Control": "private, no-store",
     });
-    expect(assetRedirectHeaders("https://example.com/a.png?X-Amz-Expires=30")).toEqual({
+    expect(assetRedirectHeaders("https://example.com/a.png?X-Amz-Expires=300", signedAt)).toEqual({
       "Cache-Control": "private, no-store",
     });
-    expect(assetRedirectHeaders("https://example.com/a.png?X-Amz-Expires=soon")).toEqual({
+    expect(assetRedirectHeaders(signed("X-Amz-Expires=300"), signedAt + 300_000)).toEqual({
+      "Cache-Control": "private, no-store",
+    });
+    expect(assetRedirectHeaders(signed("X-Amz-Expires=30"), signedAt)).toEqual({
+      "Cache-Control": "private, no-store",
+    });
+    expect(assetRedirectHeaders(signed("X-Amz-Expires=soon"), signedAt)).toEqual({
       "Cache-Control": "private, no-store",
     });
   });

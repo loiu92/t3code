@@ -3,7 +3,7 @@ import { VcsProcessExitError } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as ServerConfig from "../config.ts";
@@ -22,8 +22,9 @@ interface RecordedRequest {
 }
 
 function makeResolverLayer(options: {
-  readonly token: string | null;
+  token: string | null;
   readonly respond: () => Response;
+  readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
 }) {
   const ghCalls: Array<ReadonlyArray<string>> = [];
   const requests: RecordedRequest[] = [];
@@ -51,15 +52,17 @@ function makeResolverLayer(options: {
       });
     },
   });
-  const httpClientLayer = Layer.succeed(
-    HttpClient.HttpClient,
-    HttpClient.make((request) =>
-      Effect.sync(() => {
-        requests.push({ url: request.url, authorization: request.headers.authorization });
-        return HttpClientResponse.fromWeb(request, options.respond());
-      }),
-    ),
-  );
+  const httpClientLayer =
+    options.httpClientLayer ??
+    Layer.succeed(
+      HttpClient.HttpClient,
+      HttpClient.make((request) =>
+        Effect.sync(() => {
+          requests.push({ url: request.url, authorization: request.headers.authorization });
+          return HttpClientResponse.fromWeb(request, options.respond());
+        }),
+      ),
+    );
   const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-github-attachment-test-",
   });
@@ -104,12 +107,18 @@ describe("GitHubAttachmentResolver", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("asks anonymously when gh has no token", () => {
-    const { layer, requests } = makeResolverLayer({ token: null, respond: redirectTo(SIGNED_URL) });
+  it.effect("asks anonymously when gh has no token and picks up a later login", () => {
+    const options = { token: null as string | null, respond: redirectTo(SIGNED_URL) };
+    const { layer, ghCalls, requests } = makeResolverLayer(options);
     return Effect.gen(function* () {
       const resolver = yield* GitHubAttachmentResolver.GitHubAttachmentResolver;
       expect(yield* resolver.resolve(ATTACHMENT_URL)).toBe(SIGNED_URL);
       expect(requests).toEqual([{ url: ATTACHMENT_URL, authorization: undefined }]);
+
+      options.token = "ghp_after_login";
+      expect(yield* resolver.resolve(ATTACHMENT_URL)).toBe(SIGNED_URL);
+      expect(ghCalls).toHaveLength(2);
+      expect(requests[1]).toEqual({ url: ATTACHMENT_URL, authorization: "token ghp_after_login" });
     }).pipe(Effect.provide(layer));
   });
 
@@ -121,6 +130,48 @@ describe("GitHubAttachmentResolver", () => {
     return Effect.gen(function* () {
       const resolver = yield* GitHubAttachmentResolver.GitHubAttachmentResolver;
       expect(yield* resolver.resolve(ATTACHMENT_URL)).toBeNull();
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("never puts the token on the wire for a URL outside the allowlist", () => {
+    const { layer, ghCalls, requests } = makeResolverLayer({
+      token: "ghp_test",
+      respond: redirectTo(SIGNED_URL),
+    });
+    return Effect.gen(function* () {
+      const resolver = yield* GitHubAttachmentResolver.GitHubAttachmentResolver;
+      expect(yield* resolver.resolve("https://github.com/pingdotgg/t3code/pull/1")).toBeNull();
+      expect(yield* resolver.resolve("https://evil.example/user-attachments/assets/x")).toBeNull();
+      expect(ghCalls).toHaveLength(0);
+      expect(requests).toHaveLength(0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reports the signed target without following it", () => {
+    // The real fetch client, with fetch itself replaced: following the redirect
+    // would download the file and hand the handler a 200 instead of the target.
+    const inits: Array<RequestInit | undefined> = [];
+    const fakeFetch = ((_input: unknown, init?: RequestInit) => {
+      inits.push(init);
+      return Promise.resolve(
+        init?.redirect === "manual"
+          ? new Response(null, { status: 302, headers: { location: SIGNED_URL } })
+          : new Response("image bytes", { status: 200 }),
+      );
+    }) as typeof fetch;
+    const { layer } = makeResolverLayer({
+      token: "ghp_test",
+      respond: () => {
+        throw new Error("unused");
+      },
+      httpClientLayer: FetchHttpClient.layer.pipe(
+        Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fakeFetch)),
+      ),
+    });
+    return Effect.gen(function* () {
+      const resolver = yield* GitHubAttachmentResolver.GitHubAttachmentResolver;
+      expect(yield* resolver.resolve(ATTACHMENT_URL)).toBe(SIGNED_URL);
+      expect(inits.map((init) => init?.redirect)).toEqual(["manual"]);
     }).pipe(Effect.provide(layer));
   });
 
