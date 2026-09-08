@@ -5721,10 +5721,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             });
             const response = yield* fetchEffect(issued.relativeUrl, { redirect: "manual" });
             assert.equal(response.status, 302);
-            assert.equal(
-              response.headers.location,
-              fakeSignedAttachmentDownload(url, yield* Clock.currentTimeMillis),
-            );
+            // The stub dates its signature when the route asks, so compare the parts
+            // that do not depend on the clock.
+            const location = new URL(response.headers.location ?? "");
+            assert.equal(location.origin + location.pathname, "https://signed.example/download");
+            assert.equal(location.searchParams.get("for"), url);
+            assert.equal(location.searchParams.get("X-Amz-Expires"), "300");
             assert.match(response.headers["cache-control"] ?? "", /^private, max-age=2[0-9]{2}$/);
 
             const missing = yield* client[WS_METHODS.assetsCreateUrl]({
