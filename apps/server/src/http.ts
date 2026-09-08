@@ -85,6 +85,28 @@ export function downloadContentDisposition(fileName?: string): string {
   }`;
 }
 
+/**
+ * A redirect to a signed download can be reused until shortly before the
+ * signature expires, so remounting a document does not refetch every image.
+ * Targets without a readable expiry are never cached.
+ */
+export function assetRedirectHeaders(location: string): Record<string, string> {
+  let expiresSeconds: number | null = null;
+  try {
+    const value = new URL(location).searchParams.get("X-Amz-Expires");
+    expiresSeconds = value === null ? null : Number(value);
+  } catch {
+    expiresSeconds = null;
+  }
+  const maxAge =
+    expiresSeconds !== null && Number.isFinite(expiresSeconds)
+      ? Math.max(0, Math.floor(expiresSeconds) - 60)
+      : 0;
+  return {
+    "Cache-Control": maxAge > 0 ? `private, max-age=${maxAge}` : "private, no-store",
+  };
+}
+
 export function assetResponseHeaders(
   filePath: string,
   options?: {
@@ -390,6 +412,12 @@ export const assetRouteLayer = HttpRouter.add(
     );
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+    if (asset.kind === "redirect") {
+      return HttpServerResponse.redirect(asset.location, {
+        status: 302,
+        headers: assetRedirectHeaders(asset.location),
+      });
     }
     return yield* assetFileResponse(
       asset,

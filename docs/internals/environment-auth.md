@@ -71,7 +71,9 @@ file's identity when serving it, so atomic replacement requires a new URL while
 editing the same file in place does not. An HTML file authorized this way cannot
 load sibling assets; directory-scoped workspace previews are a separate grant.
 Clients should share the authored file reference so they do not disclose the
-temporary URL's credential.
+temporary URL's credential. A URL for a GitHub upload grants one resolution
+through the environment's `gh` credential and answers with a redirect to
+GitHub's own short-lived download, so the server never relays the bytes.
 
 Host videos can change in place. Their [HTTP
 responses](../../apps/server/src/http.ts) omit cache validators because file

@@ -10,6 +10,7 @@ import { HttpServerResponse } from "effect/unstable/http";
 import { openMediaFile } from "./assets/MediaFile.ts";
 
 import {
+  assetRedirectHeaders,
   assetResponseHeaders,
   assetFileResponse,
   downloadContentDisposition,
@@ -340,6 +341,28 @@ describe("http dev routing", () => {
     expect(resolveDevRedirectUrl(devUrl, requestUrl)).toBe(
       "http://127.0.0.1:5173/pair?token=test-token",
     );
+  });
+});
+
+describe("assetRedirectHeaders", () => {
+  it("lets the browser reuse a signed redirect until shortly before it expires", () => {
+    expect(
+      assetRedirectHeaders(
+        "https://bucket.s3.amazonaws.com/a.png?X-Amz-Expires=300&X-Amz-Signature=s",
+      ),
+    ).toEqual({ "Cache-Control": "private, max-age=240" });
+  });
+
+  it("never caches a redirect whose lifetime is unknown or too short", () => {
+    expect(assetRedirectHeaders("https://example.com/a.png")).toEqual({
+      "Cache-Control": "private, no-store",
+    });
+    expect(assetRedirectHeaders("https://example.com/a.png?X-Amz-Expires=30")).toEqual({
+      "Cache-Control": "private, no-store",
+    });
+    expect(assetRedirectHeaders("https://example.com/a.png?X-Amz-Expires=soon")).toEqual({
+      "Cache-Control": "private, no-store",
+    });
   });
 });
 
