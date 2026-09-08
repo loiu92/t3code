@@ -1592,6 +1592,11 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
   readonly workspaceRoot?: string | undefined;
   /** Authored remote destination to open when embedding fails, never a generated asset URL. */
   readonly originalUrl?: string | undefined;
+  readonly className?: string | undefined;
+  /** Sanitized authored attributes (`id`, `align`, …) that fragment links and layout rely on. */
+  readonly imageProps?:
+    | Omit<ComponentProps<"img">, "src" | "alt" | "className" | "style">
+    | undefined;
   readonly onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
 }) {
   const assetUrl = useAssetUrlState(props.environmentId, props.resource);
@@ -1605,7 +1610,17 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
         : undefined;
   const reference = path ? mediaFileReference(path, props.workspaceRoot) : undefined;
   const relativePath = reference?.relativePath;
-  const src = assetUrl._tag === "Success" ? assetUrl.url + (props.srcFragment ?? "") : null;
+  // An environment from before the `github-attachment` resource cannot mint a URL for it.
+  // Loading the authored link then is exactly what the client did before: a public
+  // repository still renders and a private one fails the way it always has.
+  const authoredUrl = resource._tag === "github-attachment" ? resource.url : null;
+  const src =
+    assetUrl._tag === "Success"
+      ? assetUrl.url + (props.srcFragment ?? "")
+      : assetUrl._tag === "Failure"
+        ? authoredUrl
+        : null;
+  const sourceFailed = assetUrl._tag === "Failure" && authoredUrl === null;
   // The server reads the pixel size from the file header, so the slot can be
   // the image's final box instead of a 16:9 guess. An authored size wins; a
   // caller's height cap shrinks the box while keeping the ratio.
@@ -1641,7 +1656,7 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     return (
       <ChatMarkdownVideo
         src={src}
-        sourceFailed={assetUrl._tag === "Failure"}
+        sourceFailed={sourceFailed}
         alt={props.alt}
         copyMarkdown={props.copyMarkdown}
         originalUrl={props.originalUrl}
@@ -1657,12 +1672,13 @@ export const ChatMarkdownAssetImage = memo(function ChatMarkdownAssetImage(props
     <ChatMarkdownImage
       key={JSON.stringify([props.environmentId, props.resource, props.srcFragment])}
       src={src}
-      sourceFailed={assetUrl._tag === "Failure"}
+      sourceFailed={sourceFailed}
       alt={props.alt}
       copyMarkdown={props.copyMarkdown}
       standalone={props.standalone ?? true}
-      className={CHAT_MARKDOWN_WORKSPACE_IMAGE_CLASS_NAME}
+      className={cn(CHAT_MARKDOWN_WORKSPACE_IMAGE_CLASS_NAME, props.className)}
       style={style}
+      imageProps={props.imageProps}
       actionsSource={actionsSource}
       originalUrl={props.originalUrl}
       onImageExpand={props.onImageExpand}
@@ -3132,7 +3148,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
           kind={kind}
           copyMarkdown={copyMarkdown}
           standalone={standalone}
+          className={className}
           style={authoredSizeStyle}
+          imageProps={imageProps}
           originalUrl={imageSource.uri}
           onImageExpand={imageExpand}
         />

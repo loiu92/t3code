@@ -28,10 +28,11 @@ function PullRequestAttachmentVideo({
   const resource = useMemo(() => ({ _tag: "github-attachment", url }) as const, [url]);
   const assetUrl = useAssetUrlState(environmentId, resource);
   const refreshAssetUrl = useAssetUrlRefresh(environmentId, resource);
+  // An older environment cannot mint the URL; the authored link is what played before.
+  const src = assetUrl._tag === "Success" ? assetUrl.url : assetUrl._tag === "Failure" ? url : null;
   return (
     <MediaVideoPlayer
-      src={assetUrl._tag === "Success" ? assetUrl.url : null}
-      sourceFailed={assetUrl._tag === "Failure"}
+      src={src}
       originalUrl={url}
       label="Pull request video"
       className="w-full"
