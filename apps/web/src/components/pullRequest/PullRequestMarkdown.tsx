@@ -28,8 +28,10 @@ function PullRequestAttachmentVideo({
   const resource = useMemo(() => ({ _tag: "github-attachment", url }) as const, [url]);
   const assetUrl = useAssetUrlState(environmentId, resource);
   const refreshAssetUrl = useAssetUrlRefresh(environmentId, resource);
-  // An older environment cannot mint the URL; the authored link is what played before.
-  const src = assetUrl._tag === "Success" ? assetUrl.url : assetUrl._tag === "Failure" ? url : null;
+  // An older environment cannot mint the URL; the authored link is what played before,
+  // and a retry then reloads that link instead of asking the environment again.
+  const showsAuthoredUrl = assetUrl._tag === "Failure";
+  const src = assetUrl._tag === "Success" ? assetUrl.url : showsAuthoredUrl ? url : null;
   return (
     <MediaVideoPlayer
       src={src}
@@ -37,7 +39,7 @@ function PullRequestAttachmentVideo({
       label="Pull request video"
       className="w-full"
       videoClassName={VIDEO_CLASS_NAME}
-      onRetry={refreshAssetUrl}
+      onRetry={showsAuthoredUrl ? undefined : refreshAssetUrl}
     />
   );
 }
